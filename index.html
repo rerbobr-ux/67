@@ -1,0 +1,2057 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Rick & Morty: Virtual Rick-ality WebXR (Quest 2/3)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&display=swap');
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #090d16;
+            font-family: 'Rubik', sans-serif;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .portal-glow {
+            box-shadow: 0 0 25px #39ff14, inset 0 0 15px #39ff14;
+            text-shadow: 0 0 10px #39ff14;
+        }
+        .rick-title {
+            color: #00e5ff;
+            text-shadow: 2px 2px 0px #39ff14, -2px -2px 0px #000, 0 0 20px rgba(57, 255, 20, 0.7);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Стартовый экран / Десктопный HUD (автоматически скрывается при входе в VR) -->
+    <div id="ui-overlay" class="fixed inset-0 pointer-events-none flex flex-col justify-between p-4 sm:p-6 z-20">
+        <!-- Верхняя панель -->
+        <div class="flex flex-wrap justify-between items-start gap-4">
+            <div class="bg-slate-900/85 border-2 border-lime-400/70 rounded-2xl p-4 backdrop-blur-md pointer-events-auto max-w-md shadow-xl">
+                <h1 class="text-2xl sm:text-3xl font-black tracking-wide rick-title">RICK & MORTY: VR GARAGE</h1>
+                <p class="text-xs sm:text-sm text-lime-300 mt-1">WebXR для Meta Quest 2 / Quest 3 (и ПК-режим)</p>
+                <div id="vr-status" class="mt-2 text-xs font-bold px-2.5 py-1 rounded-lg bg-slate-800 text-cyan-300 inline-block">
+                    Проверка WebXR...
+                </div>
+            </div>
+
+            <!-- Кнопка входа в VR -->
+            <div class="pointer-events-auto flex flex-col items-end gap-2">
+                <button id="enter-vr-btn" class="px-6 py-4 rounded-2xl bg-lime-500 hover:bg-lime-400 active:scale-95 text-slate-950 font-black text-lg sm:text-xl transition transform portal-glow cursor-pointer flex items-center gap-3">
+                    <span>🥽 ВОЙТИ В VR (QUEST 2/3)</span>
+                </button>
+                <button id="desktop-lock-btn" class="px-4 py-2 rounded-xl bg-cyan-600/90 hover:bg-cyan-500 text-white font-bold text-xs sm:text-sm transition cursor-pointer shadow-lg">
+                    🖱️ Играть на ПК (Клик для обзора)
+                </button>
+            </div>
+        </div>
+
+        <!-- Центр: прицел для ПК-режима -->
+        <div id="desktop-crosshair" class="self-center flex flex-col items-center justify-center">
+            <div class="w-3 h-3 rounded-full border-2 border-lime-400 bg-lime-400/30 shadow-[0_0_8px_#39ff14]"></div>
+            <div id="hover-hint" class="mt-2 px-3 py-1 rounded-full bg-slate-950/85 border border-lime-400/60 text-lime-300 text-xs font-bold hidden">
+                Предмет
+            </div>
+        </div>
+
+        <!-- Нижняя панель с подсказками -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-4xl self-center w-full">
+            <div class="bg-slate-900/85 border border-cyan-500/40 rounded-2xl p-3 backdrop-blur-md text-xs text-slate-200">
+                <div class="font-bold text-cyan-400 mb-1">🥽 Управление в VR (Quest 2 / 3):</div>
+                <ul class="space-y-0.5 text-slate-300">
+                    <li>• <b>Левый стик:</b> Ходьба | <b>Правый стик (влево/вправо):</b> Поворот</li>
+                    <li>• <b>Боковой курок (Grip):</b> Взять / бросить предмет</li>
+                    <li>• <b>Курок (Trigger):</b> Выстрелить порталом / активировать предмет</li>
+                    <li>• <b>Стик руки с пушкой (вверх/вниз) или Кнопка A/X:</b> Крутить шестерёнку измерений!</li>
+                </ul>
+            </div>
+            <div class="bg-slate-900/85 border border-lime-500/40 rounded-2xl p-3 backdrop-blur-md text-xs text-slate-200">
+                <div class="font-bold text-lime-400 mb-1">🖥️ Управление на ПК (без шлема):</div>
+                <ul class="space-y-0.5 text-slate-300">
+                    <li>• <b>WASD:</b> Ходьба | <b>Мышь:</b> Осмотр (нажмите кнопку выше)</li>
+                    <li>• <b>E или ПКМ:</b> Взять / бросить предмет | <b>ЛКМ:</b> Использовать / Нажать кнопку</li>
+                    <li>• <b>Колёсико мыши или Q/R:</b> Крутить шестерёнку портальной пушки</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ============================================================================
+    // 1. ПРОЦЕДУРНЫЙ АУДИО-СИНТЕЗАТОР (Web Audio API — без внешних файлов)
+    // ============================================================================
+    class SoundFX {
+        constructor() {
+            this.ctx = null;
+        }
+        init() {
+            if (!this.ctx) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                this.ctx = new AudioContext();
+            }
+            if (this.ctx.state === 'suspended') {
+                this.ctx.resume();
+            }
+        }
+        // Щелчок шестерёнки портальной пушки
+        playGearClick(pitch = 1.0) {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(520 * pitch, now);
+            osc.frequency.exponentialRampToValueAtTime(140 * pitch, now + 0.06);
+            gain.gain.setValueAtTime(0.25, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.065);
+        }
+        // Выстрел портальной пушки
+        playPortalShoot() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const lfo = this.ctx.createOscillator();
+            const lfoGain = this.ctx.createGain();
+            const gain = this.ctx.createGain();
+
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(180, now);
+            osc.frequency.exponentialRampToValueAtTime(880, now + 0.25);
+            osc.frequency.exponentialRampToValueAtTime(220, now + 0.65);
+
+            lfo.frequency.value = 28;
+            lfoGain.gain.value = 90;
+            lfo.connect(lfoGain);
+            lfoGain.connect(osc.frequency);
+
+            gain.gain.setValueAtTime(0.3, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            lfo.start(now);
+            osc.stop(now + 0.72);
+            lfo.stop(now + 0.72);
+        }
+        // Телепортация сквозь портал
+        playTeleport() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(120, now);
+            osc.frequency.exponentialRampToValueAtTime(1400, now + 0.35);
+            osc.frequency.exponentialRampToValueAtTime(90, now + 0.8);
+            gain.gain.setValueAtTime(0.35, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.82);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.85);
+        }
+        // Звук Смешивалки (Combiner)
+        playCombiner() {
+            this.init();
+            const now = this.ctx.currentTime;
+            for (let i = 0; i < 6; i++) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = i % 2 === 0 ? 'sawtooth' : 'square';
+                const start = now + i * 0.16;
+                osc.frequency.setValueAtTime(150 + i * 110, start);
+                osc.frequency.exponentialRampToValueAtTime(600 + i * 150, start + 0.14);
+                gain.gain.setValueAtTime(0.18, start);
+                gain.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(start);
+                osc.stop(start + 0.16);
+            }
+        }
+        // Чмок Плюмбуса / Фляги
+        playSquish() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(240, now);
+            osc.frequency.exponentialRampToValueAtTime(520, now + 0.12);
+            osc.frequency.exponentialRampToValueAtTime(160, now + 0.28);
+            gain.gain.setValueAtTime(0.3, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.32);
+        }
+        // Выстрел лазера
+        playLaser() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(1200, now);
+            osc.frequency.exponentialRampToValueAtTime(110, now + 0.18);
+            gain.gain.setValueAtTime(0.25, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.2);
+        }
+        // Спавн Мистера Мисикса
+        playMeeseeks() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const notes = [523.25, 659.25, 783.99, 1046.5];
+            notes.forEach((freq, idx) => {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+                gain.gain.setValueAtTime(0.2, now + idx * 0.08);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.25);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(now + idx * 0.08);
+                osc.stop(now + idx * 0.08 + 0.26);
+            });
+        }
+        // Нажатие физической кнопки в мире
+        playButton() {
+            this.init();
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(320, now);
+            osc.frequency.setValueAtTime(480, now + 0.05);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(now);
+            osc.stop(now + 0.13);
+        }
+    }
+    const sfx = new SoundFX();
+
+    // ============================================================================
+    // 2. ДАННЫЕ ОБ ИЗМЕРЕНИЯХ (КАК В ROBLOX RICK & MORTY PORTAL GUN)
+    // ============================================================================
+    const DIMENSIONS = [
+        {
+            id: 'C-137',
+            code: 'C-137',
+            name: 'ГАРАЖ РИКА',
+            desc: 'Родной гараж и лаборатория',
+            skyColor: 0x101828,
+            fogColor: 0x101828,
+            accent: '#39ff14'
+        },
+        {
+            id: '35-C',
+            code: '35-C',
+            name: 'МЕГА-ДЕРЕВЬЯ',
+            desc: 'Планета гигантских мега-семян',
+            skyColor: 0x3b185f,
+            fogColor: 0x4c1d95,
+            accent: '#f59e0b'
+        },
+        {
+            id: 'CRONENBERG',
+            code: 'C-137B',
+            name: 'МИР КРОНЕНБЕРГОВ',
+            desc: 'Токсичные пустоши мутантов',
+            skyColor: 0x2d3a1e,
+            fogColor: 0x3f4f26,
+            accent: '#a3e635'
+        },
+        {
+            id: 'BLIPS',
+            code: 'ARCADE',
+            name: 'БЛИПС ЭНД ЧИТС',
+            desc: 'Космический зал игровых автоматов',
+            skyColor: 0x09051d,
+            fogColor: 0x170b3b,
+            accent: '#ec4899'
+        },
+        {
+            id: 'CHEESE',
+            code: 'J19ζ7',
+            name: 'СЫРНОЕ ИЗМЕРЕНИЕ',
+            desc: 'Мир Дуфуса Рика и лунного сыра',
+            skyColor: 0x422006,
+            fogColor: 0x713f12,
+            accent: '#fde047'
+        },
+        {
+            id: 'BUTT',
+            code: 'B-440',
+            name: 'МИР ЗАДНИЦ',
+            desc: 'Странное розовое измерение',
+            skyColor: 0x4c1d2e,
+            fogColor: 0x831843,
+            accent: '#f472b6'
+        }
+    ];
+
+    // ============================================================================
+    // 3. ИНИЦИАЛИЗАЦИЯ THREE.JS И WEBXR
+    // ============================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x101828);
+    scene.fog = new THREE.FogExp2(0x101828, 0.035);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 100);
+    
+    // Игровая стойка (Camera Rig) для перемещения в VR и на ПК
+    const playerRig = new THREE.Group();
+    playerRig.position.set(0, 0, 1.8);
+    camera.position.set(0, 1.65, 0);
+    playerRig.add(camera);
+    scene.add(playerRig);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local-floor');
+    document.body.appendChild(renderer.domElement);
+
+    // Освещение
+    const ambientLight = new THREE.AmbientLight(0xdbeafe, 0.65);
+    scene.add(ambientLight);
+
+    const garageLight1 = new THREE.PointLight(0xe0f2fe, 1.1, 14);
+    garageLight1.position.set(0, 3.3, 0);
+    garageLight1.castShadow = true;
+    scene.add(garageLight1);
+
+    const portalGlowLight = new THREE.PointLight(0x39ff14, 0.0, 8);
+    scene.add(portalGlowLight);
+
+    // Вспомогательная функция создания процедурных текстур с текстом
+    function createSignTexture(title, subtitle, bg = '#0f172a', border = '#39ff14', textColor = '#39ff14') {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 256;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, 512, 256);
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 12;
+        ctx.strokeRect(10, 10, 492, 236);
+
+        ctx.fillStyle = textColor;
+        ctx.font = 'bold 44px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(title, 256, 105);
+
+        if (subtitle) {
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = 'bold 26px sans-serif';
+            ctx.fillText(subtitle, 256, 165);
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        return tex;
+    }
+
+    // ============================================================================
+    // 4. ГРУППЫ ОКРУЖЕНИЯ (ГАРАЖ C-137 И ДРУГИЕ ИЗМЕРЕНИЯ)
+    // ============================================================================
+    const garageGroup = new THREE.Group();
+    const dimensionWorldGroup = new THREE.Group();
+    scene.add(garageGroup);
+    scene.add(dimensionWorldGroup);
+
+    let currentDimensionIndex = 0; // 0 = C-137 Гараж
+    let selectedDialIndex = 1;     // По умолчанию на пушке выбрано измерение 35-C
+
+    // Физические интерактивные кнопки в 3D мире (нажимаются рукой в VR или кликом на ПК)
+    const worldButtons = [];
+    // Хватаемые предметы
+    const grabbableItems = [];
+    // Активные эффекты (лазеры, частицы, мисиксы)
+    const activeEntities = [];
+
+    // ============================================================================
+    // 5. ПОСТРОЕНИЕ ГАРАЖА РИКА (C-137)
+    // ============================================================================
+    function buildGarage() {
+        // Пол гаража (бетон с разметкой)
+        const floorCanvas = document.createElement('canvas');
+        floorCanvas.width = 512;
+        floorCanvas.height = 512;
+        const fctx = floorCanvas.getContext('2d');
+        fctx.fillStyle = '#334155';
+        fctx.fillRect(0, 0, 512, 512);
+        fctx.strokeStyle = '#1e293b';
+        fctx.lineWidth = 6;
+        fctx.strokeRect(0, 0, 512, 512);
+        // Пятна масла / кислоты
+        fctx.fillStyle = 'rgba(57, 255, 20, 0.14)';
+        fctx.beginPath();
+        fctx.arc(160, 220, 45, 0, Math.PI * 2);
+        fctx.fill();
+        const floorTex = new THREE.CanvasTexture(floorCanvas);
+        floorTex.wrapS = THREE.RepeatWrapping;
+        floorTex.wrapT = THREE.RepeatWrapping;
+        floorTex.repeat.set(6, 6);
+
+        const floor = new THREE.Mesh(
+            new THREE.PlaneGeometry(10, 10),
+            new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 })
+        );
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        garageGroup.add(floor);
+
+        // Стены гаража
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 });
+        const backWall = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 0.2), wallMat);
+        backWall.position.set(0, 2, -4.5);
+        backWall.receiveShadow = true;
+        garageGroup.add(backWall);
+
+        const leftWall = new THREE.Mesh(new THREE.BoxGeometry(0.2, 4, 10), wallMat);
+        leftWall.position.set(-4.8, 2, 0);
+        leftWall.receiveShadow = true;
+        garageGroup.add(leftWall);
+
+        const rightWall = new THREE.Mesh(new THREE.BoxGeometry(0.2, 4, 10), wallMat);
+        rightWall.position.set(4.8, 2, 0);
+        rightWall.receiveShadow = true;
+        garageGroup.add(rightWall);
+
+        // Гаражные ворота сзади игрока
+        const doorMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.3, roughness: 0.6 });
+        const garageDoor = new THREE.Mesh(new THREE.BoxGeometry(6.5, 3.2, 0.25), doorMat);
+        garageDoor.position.set(0, 1.6, 4.8);
+        garageGroup.add(garageDoor);
+
+        // Потолок и неоновые лампы
+        const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(10, 10), new THREE.MeshStandardMaterial({ color: 0x1e293b }));
+        ceiling.rotation.x = Math.PI / 2;
+        ceiling.position.y = 3.8;
+        garageGroup.add(ceiling);
+
+        for (let x of [-1.8, 1.8]) {
+            const lamp = new THREE.Mesh(
+                new THREE.BoxGeometry(0.3, 0.08, 2.4),
+                new THREE.MeshBasicMaterial({ color: 0xe0f2fe })
+            );
+            lamp.position.set(x, 3.72, -0.5);
+            garageGroup.add(lamp);
+        }
+
+        // --- ГЛАВНЫЙ ВЕРСТАК РИКА (Прямо перед игроком) ---
+        const benchGroup = new THREE.Group();
+        benchGroup.position.set(0, 0, -2.6);
+        garageGroup.add(benchGroup);
+
+        const tableTop = new THREE.Mesh(
+            new THREE.BoxGeometry(3.6, 0.12, 1.1),
+            new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.7 })
+        );
+        tableTop.position.y = 0.9;
+        tableTop.castShadow = true;
+        tableTop.receiveShadow = true;
+        benchGroup.add(tableTop);
+
+        const legMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.6 });
+        [[-1.65, -0.45], [1.65, -0.45], [-1.65, 0.45], [1.65, 0.45]].forEach(([lx, lz]) => {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), legMat);
+            leg.position.set(lx, 0.45, lz);
+            benchGroup.add(leg);
+        });
+
+        // Монитор с осциллографом Рика на верстаке
+        const monitorStand = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.25, 0.15), legMat);
+        monitorStand.position.set(-1.35, 1.05, -0.25);
+        benchGroup.add(monitorStand);
+
+        const monitorScreen = new THREE.Mesh(
+            new THREE.BoxGeometry(0.75, 0.5, 0.08),
+            new THREE.MeshBasicMaterial({
+                map: createSignTexture('C-137 LAB', 'WUBBA LUBBA DUB DUB!', '#022c22', '#39ff14', '#39ff14')
+            })
+        );
+        monitorScreen.position.set(-1.35, 1.38, -0.25);
+        monitorScreen.rotation.y = 0.25;
+        benchGroup.add(monitorScreen);
+
+        // КРАСНАЯ КНОПКА "СБРОС ПРЕДМЕТОВ" прямо на верстаке (чтобы не выходить из VR!)
+        const resetBase = new THREE.Mesh(
+            new THREE.BoxGeometry(0.32, 0.08, 0.32),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b })
+        );
+        resetBase.position.set(1.45, 0.98, 0.25);
+        benchGroup.add(resetBase);
+
+        const resetBtnMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.1, 0.12, 0.08, 20),
+            new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0x7f1d1d })
+        );
+        resetBtnMesh.position.set(1.45, 1.04, 0.25);
+        benchGroup.add(resetBtnMesh);
+
+        const resetLabel = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.45, 0.22),
+            new THREE.MeshBasicMaterial({ map: createSignTexture('СБРОС', 'ВЕРНУТЬ ВЕЩИ', '#450a0a', '#ef4444', '#fca5a5') })
+        );
+        resetLabel.position.set(1.45, 1.25, 0.05);
+        benchGroup.add(resetLabel);
+
+        worldButtons.push({
+            mesh: resetBtnMesh,
+            baseY: 1.04,
+            name: 'Сбросить все предметы на столы',
+            onPress: () => {
+                sfx.playButton();
+                resetAllItems();
+            }
+        });
+
+        // --- БОКОВОЙ СТОЛ СПРАВА (Для Плюмбуса, Мисикса и Мега-семени) ---
+        const sideTable = new THREE.Mesh(
+            new THREE.BoxGeometry(1.0, 0.1, 2.2),
+            new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.4 })
+        );
+        sideTable.position.set(2.8, 0.85, -0.5);
+        sideTable.receiveShadow = true;
+        garageGroup.add(sideTable);
+
+        const sideBase = new THREE.Mesh(
+            new THREE.BoxGeometry(0.8, 0.85, 2.0),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b })
+        );
+        sideBase.position.set(2.8, 0.425, -0.5);
+        garageGroup.add(sideBase);
+
+        // --- СМЕШИВАЛКА (COMBINER MACHINE ИЗ VIRTUAL RICK-ALITY) СЛЕВА ---
+        buildCombinerMachine();
+
+        // --- ТЕЛЕВИЗОР МЕЖПРОСТРАНСТВЕННОГО КАБЕЛЬНОГО ---
+        buildInterdimensionalTV();
+
+        // --- КОСМИЧЕСКИЙ КОРАБЛЬ РИКА (Виден сбоку / декорация) ---
+        buildRickShip();
+
+        // Зелёные канистры с токсичными отходами
+        for (let i = 0; i < 3; i++) {
+            const barrel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.24, 0.24, 0.68, 16),
+                new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.4 })
+            );
+            barrel.position.set(-3.8 + i * 0.55, 0.34, 2.5);
+            const glowRing = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.245, 0.245, 0.1, 16),
+                new THREE.MeshBasicMaterial({ color: 0x39ff14 })
+            );
+            glowRing.position.y = 0.15;
+            barrel.add(glowRing);
+            garageGroup.add(barrel);
+        }
+    }
+
+    // ============================================================================
+    // 6. СМЕШИВАЛКА ПРЕДМЕТОВ (COMBINER MACHINE)
+    // ============================================================================
+    let combinerPads = { left: null, right: null };
+    let combinerSparkTimer = 0;
+    let combinerPlasmaArc = null;
+
+    function buildCombinerMachine() {
+        const combinerGroup = new THREE.Group();
+        combinerGroup.position.set(-2.9, 0, -0.7);
+        combinerGroup.rotation.y = Math.PI / 2;
+        garageGroup.add(combinerGroup);
+
+        // Корпус машины
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(2.2, 0.95, 1.0),
+            new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.6, roughness: 0.4 })
+        );
+        body.position.y = 0.475;
+        body.receiveShadow = true;
+        combinerGroup.add(body);
+
+        // Вывеска СМЕШИВАЛКА
+        const sign = new THREE.Mesh(
+            new THREE.PlaneGeometry(1.5, 0.45),
+            new THREE.MeshBasicMaterial({
+                map: createSignTexture('СМЕШИВАЛКА', 'ПОЛОЖИ 2 ВЕЩИ И НАЖМИ', '#0f172a', '#00e5ff', '#00e5ff')
+            })
+        );
+        sign.position.set(0, 1.75, -0.2);
+        combinerGroup.add(sign);
+
+        // Задняя стойка
+        const backPanel = new THREE.Mesh(
+            new THREE.BoxGeometry(2.0, 1.1, 0.2),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.7 })
+        );
+        backPanel.position.set(0, 1.4, -0.35);
+        combinerGroup.add(backPanel);
+
+        // Левая и правая платформы (куда кладутся предметы)
+        const padMatL = new THREE.MeshStandardMaterial({ color: 0x0284c7, emissive: 0x0369a1, emissiveIntensity: 0.6 });
+        const padMatR = new THREE.MeshStandardMaterial({ color: 0x0284c7, emissive: 0x0369a1, emissiveIntensity: 0.6 });
+
+        const leftPad = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.08, 24), padMatL);
+        leftPad.position.set(-0.62, 0.99, 0.08);
+        combinerGroup.add(leftPad);
+
+        const rightPad = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.08, 24), padMatR);
+        rightPad.position.set(0.62, 0.99, 0.08);
+        combinerGroup.add(rightPad);
+
+        combinerPads.left = leftPad;
+        combinerPads.right = rightPad;
+
+        // Плазменная дуга между платформами (появляется при смешивании)
+        combinerPlasmaArc = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 1.24, 12),
+            new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0 })
+        );
+        combinerPlasmaArc.rotation.z = Math.PI / 2;
+        combinerPlasmaArc.position.set(0, 1.25, 0.08);
+        combinerGroup.add(combinerPlasmaArc);
+
+        // Большая зелёная кнопка запуска СМЕШИВАЛКИ
+        const btnHousing = new THREE.Mesh(
+            new THREE.BoxGeometry(0.34, 0.14, 0.34),
+            new THREE.MeshStandardMaterial({ color: 0x0f172a })
+        );
+        btnHousing.position.set(0, 1.0, 0.25);
+        combinerGroup.add(btnHousing);
+
+        const mixBtn = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.12, 0.14, 0.1, 20),
+            new THREE.MeshStandardMaterial({ color: 0x39ff14, emissive: 0x15803d })
+        );
+        mixBtn.position.set(0, 1.08, 0.25);
+        combinerGroup.add(mixBtn);
+
+        worldButtons.push({
+            mesh: mixBtn,
+            baseY: 1.08,
+            name: 'ЗАПУСТИТЬ СМЕШИВАЛКУ!',
+            onPress: () => triggerCombiner()
+        });
+    }
+
+    function triggerCombiner() {
+        sfx.playButton();
+        // Находим ближайшие предметы на левой и правой платформах
+        const leftWorldPos = new THREE.Vector3();
+        const rightWorldPos = new THREE.Vector3();
+        combinerPads.left.getWorldPosition(leftWorldPos);
+        combinerPads.right.getWorldPosition(rightWorldPos);
+
+        let itemA = null;
+        let itemB = null;
+
+        for (const item of grabbableItems) {
+            if (item.heldBy) continue;
+            if (item.mesh.position.distanceTo(leftWorldPos) < 0.55) {
+                itemA = item;
+            } else if (item.mesh.position.distanceTo(rightWorldPos) < 0.55) {
+                itemB = item;
+            }
+        }
+
+        if (!itemA || !itemB || itemA === itemB) {
+            // Мигаем платформами, если не хватает предметов
+            sfx.playGearClick(0.6);
+            return;
+        }
+
+        sfx.playCombiner();
+        combinerSparkTimer = 1.0;
+
+        // Вычисляем результат скрещивания
+        const ids = [itemA.type, itemB.type].sort().join('+');
+        const spawnPos = new THREE.Vector3().addVectors(leftWorldPos, rightWorldPos).multiplyScalar(0.5);
+        spawnPos.y += 0.35;
+
+        // Удаляем исходные два предмета (или прячем их, если это уникальные вещи, но лучше создаём гибрид!)
+        removeGrabbableItem(itemA);
+        removeGrabbableItem(itemB);
+
+        let hybridName = `МУТАНТ: ${itemA.name} + ${itemB.name}`;
+        let hybridColor = Math.random() * 0xffffff;
+        let hybridScale = 1.25;
+
+        if (ids.includes('plumbus') && ids.includes('megaseed')) {
+            hybridName = 'ЗОЛОТОЙ МЕГА-ПЛЮМБУС';
+            hybridColor = 0xfbbf24;
+            hybridScale = 1.45;
+        } else if (ids.includes('pickle') && ids.includes('laser')) {
+            hybridName = 'КИБЕР-ОГУРЧИК РИК';
+            hybridColor = 0x06b6d4;
+            hybridScale = 1.35;
+        } else if (ids.includes('flask') && ids.includes('meeseeks')) {
+            hybridName = 'ПЬЯНЫЙ МИСИКС-ТРОФЕЙ';
+            hybridColor = 0x38bdf8;
+            hybridScale = 1.3;
+        } else if (ids.includes('sauce')) {
+            hybridName = 'СЫЧУАНЬСКИЙ МУТАГЕН';
+            hybridColor = 0xef4444;
+            hybridScale = 1.4;
+        }
+
+        createHybridItem(hybridName, hybridColor, hybridScale, spawnPos);
+    }
+
+    // ============================================================================
+    // 7. ТЕЛЕВИЗОР МЕЖПРОСТРАНСТВЕННОГО КАБЕЛЬНОГО И КОРАБЛЬ РИКА
+    // ============================================================================
+    let tvScreenMesh = null;
+    let tvChannel = 0;
+    const TV_CHANNELS = [
+        { title: 'КАНАЛ 1: ДВЕ БРАТА', sub: 'ИНОПЛАНЕТНАЯ АРМАДА В КИНО!', bg: '#1e1b4b', color: '#38bdf8' },
+        { title: 'КАНАЛ 2: РЕАЛЬНЫЕ ФАЛЬШИВЫЕ ДВЕРИ', sub: 'НИ ОДНА НЕ ОТКРЫВАЕТСЯ!', bg: '#451a03', color: '#fbbf24' },
+        { title: 'КАНАЛ 3: ГЛАЗАСТЫЕ ХЛОПЬЯ', sub: 'ОТДАЙ МОИ ГЛАЗАСТЫЕ ХЛОПЬЯ!', bg: '#064e3b', color: '#34d399' },
+        { title: 'КАНАЛ 4: ШОУ ШВИФТИ', sub: 'ПОКАЖИ ЧТО ТЫ МОЖЕШЬ!', bg: '#4c0519', color: '#fb7185' }
+    ];
+
+    function buildInterdimensionalTV() {
+        const tvGroup = new THREE.Group();
+        tvGroup.position.set(2.8, 1.15, 0.25);
+        tvGroup.rotation.y = -Math.PI / 2;
+        garageGroup.add(tvGroup);
+
+        const tvBox = new THREE.Mesh(
+            new THREE.BoxGeometry(0.65, 0.48, 0.42),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 })
+        );
+        tvGroup.add(tvBox);
+
+        tvScreenMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.54, 0.38),
+            new THREE.MeshBasicMaterial({
+                map: createSignTexture(TV_CHANNELS[0].title, TV_CHANNELS[0].sub, TV_CHANNELS[0].bg, TV_CHANNELS[0].color, TV_CHANNELS[0].color)
+            })
+        );
+        tvScreenMesh.position.z = 0.215;
+        tvGroup.add(tvScreenMesh);
+
+        // Антенны
+        const ant1 = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.35), new THREE.MeshStandardMaterial({ color: 0x94a3b8 }));
+        ant1.position.set(-0.1, 0.38, 0);
+        ant1.rotation.z = 0.35;
+        tvGroup.add(ant1);
+
+        const ant2 = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.35), new THREE.MeshStandardMaterial({ color: 0x94a3b8 }));
+        ant2.position.set(0.1, 0.38, 0);
+        ant2.rotation.z = -0.35;
+        tvGroup.add(ant2);
+
+        // Кнопка переключения каналов прямо на телевизоре
+        const chBtn = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.08, 0.06),
+            new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0xb45309 })
+        );
+        chBtn.position.set(0.24, -0.18, 0.22);
+        tvGroup.add(chBtn);
+
+        worldButtons.push({
+            mesh: chBtn,
+            baseY: -0.18,
+            name: 'Переключить канал ТВ',
+            onPress: () => {
+                sfx.playButton();
+                tvChannel = (tvChannel + 1) % TV_CHANNELS.length;
+                const ch = TV_CHANNELS[tvChannel];
+                tvScreenMesh.material.map = createSignTexture(ch.title, ch.sub, ch.bg, ch.color, ch.color);
+                tvScreenMesh.material.needsUpdate = true;
+            }
+        });
+    }
+
+    function buildRickShip() {
+        const ship = new THREE.Group();
+        ship.position.set(3.4, 0.65, 2.7);
+        ship.rotation.y = -0.6;
+        garageGroup.add(ship);
+
+        // Купол кабины
+        const dome = new THREE.Mesh(
+            new THREE.SphereGeometry(0.65, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshStandardMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.65, roughness: 0.1 })
+        );
+        dome.position.y = 0.15;
+        ship.add(dome);
+
+        // Тарелка из мусорных баков
+        const saucer = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.95, 1.25, 0.35, 24),
+            new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.75, roughness: 0.3 })
+        );
+        ship.add(saucer);
+
+        // Фары из фонариков
+        for (let sx of [-0.55, 0.55]) {
+            const headlight = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.12, 0.08, 0.2, 12),
+                new THREE.MeshBasicMaterial({ color: 0xfef08a })
+            );
+            headlight.rotation.x = Math.PI / 2;
+            headlight.position.set(sx, 0.05, 1.15);
+            ship.add(headlight);
+        }
+    }
+
+    // ============================================================================
+    // 8. КУЛЬТОВЫЕ ПРЕДМЕТЫ ИЗ РИКА И МОРТИ (ПОРТАЛЬНАЯ ПУШКА, ПЛЮМБУС И ДР.)
+    // ============================================================================
+    let portalGunItem = null;
+    let portalGunGearMesh = null;
+    let portalGunHoloMesh = null;
+    let portalGunHoloCanvas = null;
+    let portalGunHoloCtx = null;
+
+    function updatePortalGunHologram() {
+        if (!portalGunHoloCtx) return;
+        const dim = DIMENSIONS[selectedDialIndex];
+        const ctx = portalGunHoloCtx;
+        ctx.clearRect(0, 0, 512, 256);
+
+        // Полупрозрачный голографический фон
+        ctx.fillStyle = 'rgba(2, 44, 34, 0.82)';
+        ctx.beginPath();
+        ctx.roundRect(12, 12, 488, 232, 28);
+        ctx.fill();
+
+        ctx.strokeStyle = dim.accent;
+        ctx.lineWidth = 8;
+        ctx.stroke();
+
+        // Код измерения
+        ctx.fillStyle = dim.accent;
+        ctx.font = '900 54px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`ИЗМЕРЕНИЕ: ${dim.code}`, 256, 85);
+
+        // Название измерения
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 38px sans-serif';
+        ctx.fillText(dim.name, 256, 145);
+
+        // Описание
+        ctx.fillStyle = '#a7f3d0';
+        ctx.font = '24px sans-serif';
+        ctx.fillText(dim.desc, 256, 195);
+
+        portalGunHoloMesh.material.map.needsUpdate = true;
+    }
+
+    function rotatePortalGunGear(dir = 1) {
+        selectedDialIndex = (selectedDialIndex + dir + DIMENSIONS.length) % DIMENSIONS.length;
+        sfx.playGearClick(1 + selectedDialIndex * 0.08);
+        if (portalGunGearMesh) {
+            portalGunGearMesh.rotation.z += dir * (Math.PI / 3);
+        }
+        updatePortalGunHologram();
+    }
+
+    function createPortalGun() {
+        const gun = new THREE.Group();
+
+        // Белый корпус
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(0.11, 0.13, 0.34),
+            new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3 })
+        );
+        body.position.set(0, 0.04, -0.05);
+        gun.add(body);
+
+        // Рукоятка
+        const grip = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.18, 0.09),
+            new THREE.MeshStandardMaterial({ color: 0x334155 })
+        );
+        grip.position.set(0, -0.08, 0.05);
+        grip.rotation.x = 0.25;
+        gun.add(grip);
+
+        // Стеклянная колба с зелёной портальной жидкостью сверху
+        const fluidTube = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.036, 0.036, 0.18, 16),
+            new THREE.MeshBasicMaterial({ color: 0x39ff14 })
+        );
+        fluidTube.position.set(0, 0.16, -0.02);
+        gun.add(fluidTube);
+
+        // Передние 3 излучателя
+        const emitterMat = new THREE.MeshBasicMaterial({ color: 0x39ff14 });
+        [[0, 0.07], [-0.035, 0.02], [0.035, 0.02]].forEach(([ex, ey]) => {
+            const em = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 12), emitterMat);
+            em.position.set(ex, ey, -0.23);
+            gun.add(em);
+        });
+
+        // ШЕСТЕРЁНКА ВЫБОРА ИЗМЕРЕНИЙ (как в популярном режиме Roblox!)
+        const gearGroup = new THREE.Group();
+        gearGroup.position.set(0, 0.11, 0.09);
+        const gearCore = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.048, 0.048, 0.025, 16),
+            new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.8, roughness: 0.2 })
+        );
+        gearCore.rotation.x = Math.PI / 2;
+        gearGroup.add(gearCore);
+
+        for (let i = 0; i < 8; i++) {
+            const tooth = new THREE.Mesh(
+                new THREE.BoxGeometry(0.016, 0.115, 0.024),
+                new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8 })
+            );
+            tooth.rotation.z = (i * Math.PI) / 4;
+            gearGroup.add(tooth);
+        }
+        gun.add(gearGroup);
+        portalGunGearMesh = gearGroup;
+
+        // ГОЛОГРАММА НАД ПОРТАЛЬНОЙ ПУШКОЙ
+        portalGunHoloCanvas = document.createElement('canvas');
+        portalGunHoloCanvas.width = 512;
+        portalGunHoloCanvas.height = 256;
+        portalGunHoloCtx = portalGunHoloCanvas.getContext('2d');
+        const holoTex = new THREE.CanvasTexture(portalGunHoloCanvas);
+
+        portalGunHoloMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.42, 0.21),
+            new THREE.MeshBasicMaterial({ map: holoTex, transparent: true, side: THREE.DoubleSide })
+        );
+        portalGunHoloMesh.position.set(0, 0.34, -0.02);
+        gun.add(portalGunHoloMesh);
+        updatePortalGunHologram();
+
+        return gun;
+    }
+
+    function createPlumbus() {
+        const plumbus = new THREE.Group();
+        const fleshyMat = new THREE.MeshStandardMaterial({ color: 0xf472b6, roughness: 0.55 });
+        const darkPinkMat = new THREE.MeshStandardMaterial({ color: 0xdb2777, roughness: 0.65 });
+
+        // Грумбо (основание)
+        const grumbo = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 16), fleshyMat);
+        plumbus.add(grumbo);
+
+        // Динглбоп (верхний отросток)
+        const dinglebop = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.07, 0.18, 14), fleshyMat);
+        dinglebop.position.y = 0.13;
+        plumbus.add(dinglebop);
+
+        // Шлим-бугорки
+        for (let i = 0; i < 6; i++) {
+            const bump = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 10), darkPinkMat);
+            const ang = (i / 6) * Math.PI * 2;
+            bump.position.set(Math.cos(ang) * 0.095, 0.02, Math.sin(ang) * 0.095);
+            plumbus.add(bump);
+        }
+
+        // Боковой отросток Флууб
+        const floob = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.03, 0.16, 10), darkPinkMat);
+        floob.position.set(0.1, 0.08, 0);
+        floob.rotation.z = -0.7;
+        plumbus.add(floob);
+
+        return plumbus;
+    }
+
+    function createMeeseeksBox() {
+        const box = new THREE.Group();
+        const cube = new THREE.Mesh(
+            new THREE.BoxGeometry(0.22, 0.22, 0.22),
+            new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.3 })
+        );
+        box.add(cube);
+
+        const topBtn = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.045, 0.045, 0.03, 16),
+            new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xca8a04 })
+        );
+        topBtn.position.y = 0.12;
+        box.add(topBtn);
+
+        return box;
+    }
+
+    function createPickleRick() {
+        const pickle = new THREE.Group();
+        const body = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.055, 0.055, 0.24, 16),
+            new THREE.MeshStandardMaterial({ color: 0x4d7c0f, roughness: 0.6 })
+        );
+        pickle.add(body);
+
+        const topCap = new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 12), body.material);
+        topCap.position.y = 0.12;
+        pickle.add(topCap);
+
+        const botCap = new THREE.Mesh(new THREE.SphereGeometry(0.055, 16, 12), body.material);
+        botCap.position.y = -0.12;
+        pickle.add(botCap);
+
+        // Глаза Огурчика Рика
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        [-0.02, 0.02].forEach(ex => {
+            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.015, 8, 8), eyeMat);
+            eye.position.set(ex, 0.06, 0.05);
+            pickle.add(eye);
+            const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.006, 6, 6), pupilMat);
+            pupil.position.set(ex, 0.06, 0.063);
+            pickle.add(pupil);
+        });
+
+        return pickle;
+    }
+
+    function createMegaSeed() {
+        const seed = new THREE.Group();
+        const core = new THREE.Mesh(
+            new THREE.ConeGeometry(0.11, 0.32, 12),
+            new THREE.MeshStandardMaterial({ color: 0x92400e, emissive: 0x451a03, roughness: 0.5 })
+        );
+        seed.add(core);
+        return seed;
+    }
+
+    function createFlask() {
+        const flask = new THREE.Group();
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(0.13, 0.19, 0.055),
+            new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.85, roughness: 0.2 })
+        );
+        flask.add(body);
+
+        const cap = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.02, 0.02, 0.04, 12),
+            new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.9 })
+        );
+        cap.position.y = 0.11;
+        flask.add(cap);
+
+        // Зелёная капля на горлышке
+        const dribble = new THREE.Mesh(
+            new THREE.SphereGeometry(0.016, 8, 8),
+            new THREE.MeshBasicMaterial({ color: 0x39ff14 })
+        );
+        dribble.position.set(0.02, 0.09, 0.028);
+        flask.add(dribble);
+
+        return flask;
+    }
+
+    function createSzechuanSauce() {
+        const pack = new THREE.Group();
+        const cup = new THREE.Mesh(
+            new THREE.BoxGeometry(0.14, 0.045, 0.1),
+            new THREE.MeshStandardMaterial({ color: 0xdc2626 })
+        );
+        pack.add(cup);
+
+        const lid = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.13, 0.09),
+            new THREE.MeshBasicMaterial({ map: createSignTexture('SZECHUAN', 'MCNUGGET SAUCE', '#991b1b', '#facc15', '#facc15') })
+        );
+        lid.rotation.x = -Math.PI / 2;
+        lid.position.y = 0.024;
+        pack.add(lid);
+        return pack;
+    }
+
+    function createLaserPistol() {
+        const gun = new THREE.Group();
+        const barrel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.028, 0.045, 0.28, 14),
+            new THREE.MeshStandardMaterial({ color: 0xeab308, metalness: 0.6 })
+        );
+        barrel.rotation.x = Math.PI / 2;
+        barrel.position.set(0, 0.04, -0.08);
+        gun.add(barrel);
+
+        const handle = new THREE.Mesh(
+            new THREE.BoxGeometry(0.06, 0.15, 0.08),
+            new THREE.MeshStandardMaterial({ color: 0x1e293b })
+        );
+        handle.position.set(0, -0.05, 0.02);
+        gun.add(handle);
+
+        return gun;
+    }
+
+    function createHybridItem(name, color, scale, pos) {
+        const group = new THREE.Group();
+        const core = new THREE.Mesh(
+            new THREE.IcosahedronGeometry(0.13 * scale, 1),
+            new THREE.MeshStandardMaterial({ color: color, emissive: color, emissiveIntensity: 0.35, roughness: 0.3 })
+        );
+        group.add(core);
+
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(0.18 * scale, 0.02, 8, 24),
+            new THREE.MeshBasicMaterial({ color: 0x39ff14 })
+        );
+        ring.rotation.x = Math.PI / 2;
+        group.add(ring);
+
+        group.position.copy(pos);
+        scene.add(group);
+
+        const itemObj = {
+            type: 'hybrid',
+            name: name,
+            mesh: group,
+            homePos: pos.clone(),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            isHybrid: true,
+            onUse: () => {
+                sfx.playSquish();
+                group.rotation.y += 0.8;
+            }
+        };
+        grabbableItems.push(itemObj);
+        return itemObj;
+    }
+
+    function removeGrabbableItem(item) {
+        scene.remove(item.mesh);
+        const idx = grabbableItems.indexOf(item);
+        if (idx !== -1) grabbableItems.splice(idx, 1);
+    }
+
+    // Спавн всех стартовых предметов на столах
+    function spawnInitialItems() {
+        // Портальная пушка — прямо перед игроком на верстаке!
+        const pgMesh = createPortalGun();
+        pgMesh.position.set(0, 1.08, -2.35);
+        scene.add(pgMesh);
+        portalGunItem = {
+            type: 'portal_gun',
+            name: 'Портальная пушка Рика',
+            mesh: pgMesh,
+            homePos: new THREE.Vector3(0, 1.08, -2.35),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => firePortalGun()
+        };
+        grabbableItems.push(portalGunItem);
+
+        // Лазерный бластер
+        const laserMesh = createLaserPistol();
+        laserMesh.position.set(-0.65, 1.04, -2.35);
+        scene.add(laserMesh);
+        grabbableItems.push({
+            type: 'laser',
+            name: 'Бластер Рика',
+            mesh: laserMesh,
+            homePos: new THREE.Vector3(-0.65, 1.04, -2.35),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: (worldPos, worldQuat) => fireLaser(worldPos, worldQuat)
+        });
+
+        // Фляга Рика
+        const flaskMesh = createFlask();
+        flaskMesh.position.set(0.65, 1.06, -2.35);
+        scene.add(flaskMesh);
+        grabbableItems.push({
+            type: 'flask',
+            name: 'Фляга Рика',
+            mesh: flaskMesh,
+            homePos: new THREE.Vector3(0.65, 1.06, -2.35),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => sfx.playSquish()
+        });
+
+        // Плюмбус (на правом столе)
+        const plumbusMesh = createPlumbus();
+        plumbusMesh.position.set(2.65, 1.02, -1.1);
+        scene.add(plumbusMesh);
+        grabbableItems.push({
+            type: 'plumbus',
+            name: 'Плюмбус',
+            mesh: plumbusMesh,
+            homePos: new THREE.Vector3(2.65, 1.02, -1.1),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => {
+                sfx.playSquish();
+                plumbusMesh.scale.set(1.2, 0.8, 1.2);
+                setTimeout(() => plumbusMesh.scale.set(1, 1, 1), 180);
+            }
+        });
+
+        // Коробка Мистера Мисикса (на правом столе)
+        const meeseeksMesh = createMeeseeksBox();
+        meeseeksMesh.position.set(2.65, 1.02, -0.55);
+        scene.add(meeseeksMesh);
+        grabbableItems.push({
+            type: 'meeseeks',
+            name: 'Коробка Мистера Мисикса',
+            mesh: meeseeksMesh,
+            homePos: new THREE.Vector3(2.65, 1.02, -0.55),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: (worldPos) => spawnMrMeeseeks(worldPos)
+        });
+
+        // Огурчик Рик
+        const pickleMesh = createPickleRick();
+        pickleMesh.position.set(0.32, 1.04, -2.25);
+        scene.add(pickleMesh);
+        grabbableItems.push({
+            type: 'pickle',
+            name: 'Огурчик Рик!',
+            mesh: pickleMesh,
+            homePos: new THREE.Vector3(0.32, 1.04, -2.25),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => sfx.playSquish()
+        });
+
+        // Мега-семя
+        const seedMesh = createMegaSeed();
+        seedMesh.position.set(2.65, 1.06, -1.45);
+        scene.add(seedMesh);
+        grabbableItems.push({
+            type: 'megaseed',
+            name: 'Мега-семя',
+            mesh: seedMesh,
+            homePos: new THREE.Vector3(2.65, 1.06, -1.45),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => sfx.playGearClick(1.5)
+        });
+
+        // Сычуаньский соус
+        const sauceMesh = createSzechuanSauce();
+        sauceMesh.position.set(-0.32, 0.99, -2.2);
+        scene.add(sauceMesh);
+        grabbableItems.push({
+            type: 'sauce',
+            name: 'Сычуаньский соус',
+            mesh: sauceMesh,
+            homePos: new THREE.Vector3(-0.32, 0.99, -2.2),
+            velocity: new THREE.Vector3(),
+            heldBy: null,
+            onUse: () => sfx.playSquish()
+        });
+    }
+
+    function resetAllItems() {
+        // Удаляем старые гибриды и восстанавливаем недостающие базовые предметы
+        for (let i = grabbableItems.length - 1; i >= 0; i--) {
+            scene.remove(grabbableItems[i].mesh);
+        }
+        grabbableItems.length = 0;
+        spawnInitialItems();
+    }
+
+    // ============================================================================
+    // 9. АКТИВНЫЙ ЗЕЛЁНЫЙ ПОРТАЛ И ТЕЛЕПОРТАЦИЯ В ИЗМЕРЕНИЯ
+    // ============================================================================
+    let activePortal = null;
+
+    function firePortalGun() {
+        sfx.playPortalShoot();
+
+        if (activePortal) {
+            scene.remove(activePortal.group);
+        }
+
+        const gunWorldPos = new THREE.Vector3();
+        const gunWorldQuat = new THREE.Quaternion();
+        portalGunItem.mesh.getWorldPosition(gunWorldPos);
+        portalGunItem.mesh.getWorldQuaternion(gunWorldQuat);
+
+        // Направление выстрела вперёд от пушки
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(gunWorldQuat);
+        forward.y = 0;
+        if (forward.lengthSq() < 0.01) forward.set(0, 0, -1);
+        forward.normalize();
+
+        // Ставим портал на расстоянии 2.2 метра перед игроком на удобной высоте
+        const portalPos = gunWorldPos.clone().addScaledVector(forward, 2.2);
+        portalPos.y = 1.35;
+
+        const targetDim = DIMENSIONS[selectedDialIndex];
+        const portalGroup = new THREE.Group();
+        portalGroup.position.copy(portalPos);
+        portalGroup.lookAt(gunWorldPos.x, 1.35, gunWorldPos.z);
+
+        // Вращающийся зелёный вихрь портала
+        const swirlCanvas = document.createElement('canvas');
+        swirlCanvas.width = 256;
+        swirlCanvas.height = 256;
+        const sctx = swirlCanvas.getContext('2d');
+        const grad = sctx.createRadialGradient(128, 128, 10, 128, 128, 124);
+        grad.addColorStop(0, '#ecfccb');
+        grad.addColorStop(0.35, '#39ff14');
+        grad.addColorStop(0.75, '#15803d');
+        grad.addColorStop(1, 'rgba(21, 128, 61, 0)');
+        sctx.fillStyle = grad;
+        sctx.fillRect(0, 0, 256, 256);
+
+        // Спиральные пятна внутри портала
+        sctx.strokeStyle = '#fef08a';
+        sctx.lineWidth = 6;
+        for (let r = 25; r < 110; r += 22) {
+            sctx.beginPath();
+            sctx.arc(128, 128, r, 0, Math.PI * 1.3);
+            sctx.stroke();
+        }
+
+        const portalTex = new THREE.CanvasTexture(swirlCanvas);
+        const portalDisc = new THREE.Mesh(
+            new THREE.CircleGeometry(1.15, 32),
+            new THREE.MeshBasicMaterial({ map: portalTex, transparent: true, side: THREE.DoubleSide })
+        );
+        portalDisc.scale.set(0.8, 1.25, 1);
+        portalGroup.add(portalDisc);
+
+        // Табличка над порталом с названием измерения
+        const banner = new THREE.Mesh(
+            new THREE.PlaneGeometry(1.4, 0.36),
+            new THREE.MeshBasicMaterial({
+                map: createSignTexture(`ПОРТАЛ: ${targetDim.code}`, `${targetDim.name} (ШАГНИ ВНУТРЬ)`, '#022c22', '#39ff14', '#39ff14'),
+                side: THREE.DoubleSide
+            })
+        );
+        banner.position.y = 1.62;
+        portalGroup.add(banner);
+
+        scene.add(portalGroup);
+        portalGlowLight.position.copy(portalPos);
+        portalGlowLight.intensity = 2.0;
+
+        activePortal = {
+            group: portalGroup,
+            disc: portalDisc,
+            targetIndex: selectedDialIndex,
+            cooldown: 0.8 // Чтобы сразу не засосало в момент выстрела
+        };
+    }
+
+    // Генерация окружения выбранного измерения
+    function switchDimension(dimIndex) {
+        sfx.playTeleport();
+        currentDimensionIndex = dimIndex;
+        const dim = DIMENSIONS[dimIndex];
+
+        scene.background = new THREE.Color(dim.skyColor);
+        scene.fog = new THREE.FogExp2(dim.fogColor, 0.03);
+
+        // Очищаем предыдущее измерение
+        while (dimensionWorldGroup.children.length > 0) {
+            dimensionWorldGroup.remove(dimensionWorldGroup.children[0]);
+        }
+
+        if (dimIndex === 0) {
+            // Возврат в родной Гараж C-137
+            garageGroup.visible = true;
+            dimensionWorldGroup.visible = false;
+            playerRig.position.set(0, 0, 1.6);
+            return;
+        }
+
+        // Скрываем гараж, показываем новое измерение!
+        garageGroup.visible = false;
+        dimensionWorldGroup.visible = true;
+        playerRig.position.set(0, 0, 2.5);
+
+        // Пол измерения
+        const groundColor = dim.id === '35-C' ? 0x581c87 :
+                            dim.id === 'CRONENBERG' ? 0x365314 :
+                            dim.id === 'BLIPS' ? 0x1e1b4b :
+                            dim.id === 'CHEESE' ? 0xca8a04 : 0x9d174d;
+
+        const ground = new THREE.Mesh(
+            new THREE.CircleGeometry(28, 36),
+            new THREE.MeshStandardMaterial({ color: groundColor, roughness: 0.85 })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        dimensionWorldGroup.add(ground);
+
+        // Уникальные декорации каждого измерения
+        if (dim.id === '35-C') {
+            // Гигантские Мега-деревья с золотыми мега-семенами
+            for (let i = 0; i < 14; i++) {
+                const ang = (i / 14) * Math.PI * 2;
+                const dist = 5 + (i % 3) * 4;
+                const trunk = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.35, 0.6, 7, 10),
+                    new THREE.MeshStandardMaterial({ color: 0x4c1d95 })
+                );
+                trunk.position.set(Math.cos(ang) * dist, 3.5, Math.sin(ang) * dist);
+                const crown = new THREE.Mesh(
+                    new THREE.SphereGeometry(2.2, 12, 12),
+                    new THREE.MeshStandardMaterial({ color: 0xd97706, emissive: 0x78350f })
+                );
+                crown.position.y = 4;
+                trunk.add(crown);
+                dimensionWorldGroup.add(trunk);
+            }
+        } else if (dim.id === 'BLIPS') {
+            // Аркадные автоматы Blips and Chitz
+            for (let i = 0; i < 10; i++) {
+                const ang = (i / 10) * Math.PI * 2;
+                const cab = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.1, 2.2, 1.0),
+                    new THREE.MeshStandardMaterial({ color: 0xec4899, emissive: 0x831843 })
+                );
+                cab.position.set(Math.cos(ang) * 6.5, 1.1, Math.sin(ang) * 6.5);
+                cab.lookAt(0, 1.1, 0);
+                dimensionWorldGroup.add(cab);
+            }
+        } else if (dim.id === 'CHEESE') {
+            // Огромные куски лунного сыра
+            for (let i = 0; i < 12; i++) {
+                const ang = (i / 12) * Math.PI * 2;
+                const cheese = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.2, 1.2, 1.4, 8),
+                    new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.6 })
+                );
+                cheese.position.set(Math.cos(ang) * 6, 0.7, Math.sin(ang) * 6);
+                dimensionWorldGroup.add(cheese);
+            }
+        } else if (dim.id === 'BUTT') {
+            // Розовые холмы-ягодицы мира Butt World
+            for (let i = 0; i < 10; i++) {
+                const ang = (i / 10) * Math.PI * 2;
+                const buttGroup = new THREE.Group();
+                const cheekL = new THREE.Mesh(new THREE.SphereGeometry(1.3, 16, 16), new THREE.MeshStandardMaterial({ color: 0xf472b6 }));
+                cheekL.position.x = -0.85;
+                const cheekR = new THREE.Mesh(new THREE.SphereGeometry(1.3, 16, 16), new THREE.MeshStandardMaterial({ color: 0xf472b6 }));
+                cheekR.position.x = 0.85;
+                buttGroup.add(cheekL, cheekR);
+                buttGroup.position.set(Math.cos(ang) * 7.5, 0.8, Math.sin(ang) * 7.5);
+                buttGroup.lookAt(0, 0.8, 0);
+                dimensionWorldGroup.add(buttGroup);
+            }
+        } else {
+            // Мир Кроненбергов — зелёные пузыри и щупальца
+            for (let i = 0; i < 16; i++) {
+                const ang = (i / 16) * Math.PI * 2;
+                const blob = new THREE.Mesh(
+                    new THREE.DodecahedronGeometry(1.3, 1),
+                    new THREE.MeshStandardMaterial({ color: 0x84cc16, roughness: 0.3 })
+                );
+                blob.position.set(Math.cos(ang) * 6.5, 0.9, Math.sin(ang) * 6.5);
+                dimensionWorldGroup.add(blob);
+            }
+        }
+
+        // Автоматически переключаем шестерёнку на пушке на C-137 (Гараж), чтобы игрок мог легко вернуться домой!
+        selectedDialIndex = 0;
+        updatePortalGunHologram();
+    }
+
+    // ============================================================================
+    // 10. СПАВН МИСТЕРА МИСИКСА И ВЫСТРЕЛ ЛАЗЕРА
+    // ============================================================================
+    function spawnMrMeeseeks(originPos) {
+        sfx.playMeeseeks();
+        const meeseeks = new THREE.Group();
+        const skinMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.4 });
+
+        const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.55, 14), skinMat);
+        torso.position.y = 0.75;
+        meeseeks.add(torso);
+
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 16), skinMat);
+        head.position.y = 1.18;
+        meeseeks.add(head);
+
+        // Оранжевый хохолок волос
+        const hair = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.14, 8), new THREE.MeshBasicMaterial({ color: 0xf97316 }));
+        hair.position.y = 1.36;
+        meeseeks.add(hair);
+
+        // Руки
+        const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.45), skinMat);
+        armL.position.set(-0.22, 0.95, 0);
+        armL.rotation.z = 0.6;
+        meeseeks.add(armL);
+
+        const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.45), skinMat);
+        armR.position.set(0.22, 0.95, 0);
+        armR.rotation.z = -0.6;
+        meeseeks.add(armR);
+
+        // Табличка "Я МИСТЕР МИСИКС, ПОСМОТРИТЕ НА МЕНЯ!"
+        const label = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.95, 0.25),
+            new THREE.MeshBasicMaterial({
+                map: createSignTexture('Я МИСТЕР МИСИКС!', 'ПОСМОТРИТЕ НА МЕНЯ!', '#0369a1', '#38bdf8', '#ffffff'),
+                side: THREE.DoubleSide
+            })
+        );
+        label.position.y = 1.62;
+        meeseeks.add(label);
+
+        meeseeks.position.set(originPos.x + (Math.random() - 0.5) * 0.6, 0, originPos.z + 0.4);
+        scene.add(meeseeks);
+
+        activeEntities.push({
+            type: 'meeseeks',
+            mesh: meeseeks,
+            armL,
+            armR,
+            life: 6.5
+        });
+    }
+
+    function fireLaser(worldPos, worldQuat) {
+        sfx.playLaser();
+        const bolt = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.015, 0.015, 0.35, 8),
+            new THREE.MeshBasicMaterial({ color: 0xef4444 })
+        );
+        bolt.position.copy(worldPos);
+        bolt.quaternion.copy(worldQuat);
+        bolt.rotateX(Math.PI / 2);
+
+        const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(worldQuat).normalize();
+        scene.add(bolt);
+
+        activeEntities.push({
+            type: 'laser',
+            mesh: bolt,
+            vel: dir.multiplyScalar(18),
+            life: 1.5
+        });
+    }
+
+    // ============================================================================
+    // 11. КОНТРОЛЛЕРЫ META QUEST 2 / QUEST 3 (WEBXR) И ДЕСКТОП-УПРАВЛЕНИЕ
+    // ============================================================================
+    const controllers = [];
+    for (let i = 0; i < 2; i++) {
+        const ctrl = renderer.xr.getController(i);
+        playerRig.add(ctrl);
+
+        // Визуальная 3D модель руки / контроллера в VR
+        const handGroup = new THREE.Group();
+        const palm = new THREE.Mesh(
+            new THREE.BoxGeometry(0.075, 0.04, 0.11),
+            new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.4 })
+        );
+        const pointerLine = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.002, 0.002, 0.35),
+            new THREE.MeshBasicMaterial({ color: 0x39ff14, transparent: true, opacity: 0.45 })
+        );
+        pointerLine.rotation.x = Math.PI / 2;
+        pointerLine.position.z = -0.18;
+        handGroup.add(palm, pointerLine);
+        ctrl.add(handGroup);
+
+        const state = {
+            controller: ctrl,
+            handGroup: handGroup,
+            heldItem: null,
+            prevPos: new THREE.Vector3(),
+            velocity: new THREE.Vector3(),
+            gearCooldown: 0,
+            snapCooldown: 0,
+            btnPressedPrev: false
+        };
+
+        // Боковой курок (Grip / Squeeze) — взять или бросить предмет
+        ctrl.addEventListener('squeezestart', () => {
+            sfx.init();
+            tryGrabItemVR(state);
+        });
+        ctrl.addEventListener('squeezeend', () => {
+            releaseItemVR(state);
+        });
+
+        // Основной курок (Trigger / Select) — использовать предмет или нажать 3D кнопку
+        ctrl.addEventListener('selectstart', () => {
+            sfx.init();
+            if (state.heldItem) {
+                const pos = new THREE.Vector3();
+                const quat = new THREE.Quaternion();
+                state.heldItem.mesh.getWorldPosition(pos);
+                state.heldItem.mesh.getWorldQuaternion(quat);
+                state.heldItem.onUse(pos, quat);
+            } else {
+                tryPressWorldButtonVR(state);
+            }
+        });
+
+        controllers.push(state);
+    }
+
+    function tryGrabItemVR(handState) {
+        if (handState.heldItem) return;
+        const handPos = new THREE.Vector3();
+        handState.controller.getWorldPosition(handPos);
+
+        let closest = null;
+        let minDist = 0.32; // Радиус захвата рукой в VR
+        for (const item of grabbableItems) {
+            if (item.heldBy) continue;
+            const d = handPos.distanceTo(item.mesh.position);
+            if (d < minDist) {
+                minDist = d;
+                closest = item;
+            }
+        }
+
+        if (closest) {
+            closest.heldBy = handState;
+            handState.heldItem = closest;
+            handState.controller.add(closest.mesh);
+            closest.mesh.position.set(0, 0, -0.04);
+            closest.mesh.rotation.set(0, 0, 0);
+            sfx.playGearClick(1.3);
+        }
+    }
+
+    function releaseItemVR(handState) {
+        const item = handState.heldItem;
+        if (!item) return;
+
+        const worldPos = new THREE.Vector3();
+        const worldQuat = new THREE.Quaternion();
+        item.mesh.getWorldPosition(worldPos);
+        item.mesh.getWorldQuaternion(worldQuat);
+
+        scene.add(item.mesh);
+        item.mesh.position.copy(worldPos);
+        item.mesh.quaternion.copy(worldQuat);
+        item.velocity.copy(handState.velocity).multiplyScalar(1.2);
+
+        item.heldBy = null;
+        handState.heldItem = null;
+    }
+
+    function tryPressWorldButtonVR(handState) {
+        const handPos = new THREE.Vector3();
+        handState.controller.getWorldPosition(handPos);
+        for (const btn of worldButtons) {
+            const btnPos = new THREE.Vector3();
+            btn.mesh.getWorldPosition(btnPos);
+            if (handPos.distanceTo(btnPos) < 0.35) {
+                btn.mesh.position.y = btn.baseY - 0.03;
+                setTimeout(() => { btn.mesh.position.y = btn.baseY; }, 160);
+                btn.onPress();
+                return;
+            }
+        }
+    }
+
+    // Обработка стиков и кнопок Quest 2 / Quest 3 в каждом кадре
+    function updateVRControllers(dt) {
+        const session = renderer.xr.getSession();
+        if (!session) return;
+
+        for (let i = 0; i < controllers.length; i++) {
+            const state = controllers[i];
+            const currPos = new THREE.Vector3();
+            state.controller.getWorldPosition(currPos);
+            if (dt > 0) {
+                state.velocity.subVectors(currPos, state.prevPos).divideScalar(dt);
+            }
+            state.prevPos.copy(currPos);
+
+            if (state.gearCooldown > 0) state.gearCooldown -= dt;
+            if (state.snapCooldown > 0) state.snapCooldown -= dt;
+
+            // Авто-нажатие 3D кнопок при физическом касании рукой в VR!
+            for (const btn of worldButtons) {
+                const btnPos = new THREE.Vector3();
+                btn.mesh.getWorldPosition(btnPos);
+                if (currPos.distanceTo(btnPos) < 0.14 && !btn.touchCooldown) {
+                    btn.touchCooldown = true;
+                    btn.mesh.position.y = btn.baseY - 0.03;
+                    setTimeout(() => {
+                        btn.mesh.position.y = btn.baseY;
+                        btn.touchCooldown = false;
+                    }, 550);
+                    btn.onPress();
+                }
+            }
+        }
+
+        // Читаем оси и кнопки геймпадов Quest Touch
+        for (const source of session.inputSources) {
+            if (!source.gamepad) continue;
+            const gp = source.gamepad;
+            const axes = gp.axes; // [2] = thumbstick X, [3] = thumbstick Y
+            const stickX = axes.length >= 4 ? axes[2] : (axes[0] || 0);
+            const stickY = axes.length >= 4 ? axes[3] : (axes[1] || 0);
+
+            // Определяем какая рука держит портальную пушку
+            const handIdx = source.handedness === 'left' ? 0 : 1;
+            const matchingHand = controllers.find(c => c.heldItem && c.heldItem.type === 'portal_gun');
+
+            // 1. Вращение шестерёнки портальной пушки:
+            // Кнопка A / X (buttons[4]) ИЛИ стик вверх/вниз на руке с пушкой
+            const faceBtnPressed = gp.buttons[4] && gp.buttons[4].pressed;
+            if (matchingHand) {
+                if (faceBtnPressed && !matchingHand.btnPressedPrev) {
+                    rotatePortalGunGear(1);
+                }
+                matchingHand.btnPressedPrev = faceBtnPressed;
+
+                // Если в этой руке пушка — вертикальный стик крутит шестерёнку!
+                const isThisHandHoldingPG = controllers[handIdx] && controllers[handIdx].heldItem && controllers[handIdx].heldItem.type === 'portal_gun';
+                if (isThisHandHoldingPG && Math.abs(stickY) > 0.55 && controllers[handIdx].gearCooldown <= 0) {
+                    rotatePortalGunGear(stickY < 0 ? 1 : -1);
+                    controllers[handIdx].gearCooldown = 0.28;
+                }
+            }
+
+            // 2. Перемещение (Левый стик) и резкий поворот (Правый стик)
+            if (source.handedness === 'left') {
+                const isLeftHoldingPG = controllers[0].heldItem && controllers[0].heldItem.type === 'portal_gun';
+                if (!isLeftHoldingPG && (Math.abs(stickX) > 0.15 || Math.abs(stickY) > 0.15)) {
+                    const forward = new THREE.Vector3();
+                    camera.getWorldDirection(forward);
+                    forward.y = 0;
+                    forward.normalize();
+                    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+                    playerRig.position.addScaledVector(forward, -stickY * 2.6 * dt);
+                    playerRig.position.addScaledVector(right, stickX * 2.6 * dt);
+                }
+            } else if (source.handedness === 'right') {
+                if (Math.abs(stickX) > 0.65 && controllers[1].snapCooldown <= 0) {
+                    playerRig.rotation.y -= Math.sign(stickX) * (Math.PI / 4);
+                    controllers[1].snapCooldown = 0.32;
+                }
+            }
+        }
+    }
+
+    // ============================================================================
+    // 12. ДЕСКТОПНОЕ УПРАВЛЕНИЕ (ДЛЯ ТЕСТА БЕЗ ШЛЕМА)
+    // ============================================================================
+    const keys = {};
+    let desktopHeldItem = null;
+    let yaw = 0;
+    let pitch = 0;
+    const raycaster = new THREE.Raycaster();
+    const hoverHintEl = document.getElementById('hover-hint');
+
+    window.addEventListener('keydown', (e) => {
+        keys[e.code] = true;
+        if (e.code === 'KeyE') {
+            sfx.init();
+            toggleDesktopGrab();
+        }
+        if (e.code === 'KeyQ') rotatePortalGunGear(-1);
+        if (e.code === 'KeyR') rotatePortalGunGear(1);
+    });
+    window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    window.addEventListener('wheel', (e) => {
+        if (!renderer.xr.isPresenting) {
+            rotatePortalGunGear(e.deltaY > 0 ? 1 : -1);
+        }
+    });
+
+    const desktopLockBtn = document.getElementById('desktop-lock-btn');
+    desktopLockBtn.addEventListener('click', () => {
+        sfx.init();
+        renderer.domElement.requestPointerLock();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement === renderer.domElement) {
+            yaw -= e.movementX * 0.0022;
+            pitch = Math.max(-1.3, Math.min(1.3, pitch - e.movementY * 0.0022));
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = yaw;
+            camera.rotation.x = pitch;
+        }
+    });
+
+    window.addEventListener('mousedown', (e) => {
+        if (renderer.xr.isPresenting) return;
+        if (document.pointerLockElement !== renderer.domElement) return;
+        sfx.init();
+
+        if (e.button === 2) {
+            toggleDesktopGrab();
+        } else if (e.button === 0) {
+            if (desktopHeldItem) {
+                const pos = new THREE.Vector3();
+                const quat = new THREE.Quaternion();
+                desktopHeldItem.mesh.getWorldPosition(pos);
+                desktopHeldItem.mesh.getWorldQuaternion(quat);
+                desktopHeldItem.onUse(pos, quat);
+            } else {
+                // Проверка нажатия 3D кнопки по центру прицела
+                raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+                const btnMeshes = worldButtons.map(b => b.mesh);
+                const hits = raycaster.intersectObjects(btnMeshes);
+                if (hits.length > 0 && hits[0].distance < 3.2) {
+                    const btn = worldButtons.find(b => b.mesh === hits[0].object);
+                    if (btn) btn.onPress();
+                }
+            }
+        }
+    });
+    window.addEventListener('contextmenu', e => e.preventDefault());
+
+    function toggleDesktopGrab() {
+        if (desktopHeldItem) {
+            // Бросаем предмет перед собой
+            const pos = new THREE.Vector3();
+            const quat = new THREE.Quaternion();
+            desktopHeldItem.mesh.getWorldPosition(pos);
+            desktopHeldItem.mesh.getWorldQuaternion(quat);
+            scene.add(desktopHeldItem.mesh);
+            desktopHeldItem.mesh.position.copy(pos);
+            desktopHeldItem.mesh.quaternion.copy(quat);
+
+            const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()));
+            desktopHeldItem.velocity.copy(dir).multiplyScalar(3.2);
+            desktopHeldItem.heldBy = null;
+            desktopHeldItem = null;
+            return;
+        }
+
+        raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+        let bestItem = null;
+        let bestDist = 3.0;
+        for (const item of grabbableItems) {
+            const hits = raycaster.intersectObjects(item.mesh.children, true);
+            if (hits.length > 0 && hits[0].distance < bestDist) {
+                bestDist = hits[0].distance;
+                bestItem = item;
+            }
+        }
+        if (bestItem) {
+            bestItem.heldBy = 'desktop';
+            desktopHeldItem = bestItem;
+            camera.add(bestItem.mesh);
+            bestItem.mesh.position.set(0.28, -0.24, -0.52);
+            bestItem.mesh.rotation.set(0, 0, 0);
+            sfx.playGearClick(1.2);
+        }
+    }
+
+    function updateDesktopMovement(dt) {
+        if (renderer.xr.isPresenting) return;
+        const speed = 3.2 * dt;
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward);
+        forward.y = 0;
+        forward.normalize();
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+        if (keys['KeyW'] || keys['ArrowUp']) playerRig.position.addScaledVector(forward, speed);
+        if (keys['KeyS'] || keys['ArrowDown']) playerRig.position.addScaledVector(forward, -speed);
+        if (keys['KeyA'] || keys['ArrowLeft']) playerRig.position.addScaledVector(right, -speed);
+        if (keys['KeyD'] || keys['ArrowRight']) playerRig.position.addScaledVector(right, speed);
+
+        // Подсказка при наведении на предмет или кнопку
+        raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+        let foundName = null;
+        for (const btn of worldButtons) {
+            const hits = raycaster.intersectObject(btn.mesh);
+            if (hits.length > 0 && hits[0].distance < 3.2) {
+                foundName = `[ЛКМ] ${btn.name}`;
+                break;
+            }
+        }
+        if (!foundName && !desktopHeldItem) {
+            for (const item of grabbableItems) {
+                const hits = raycaster.intersectObjects(item.mesh.children, true);
+                if (hits.length > 0 && hits[0].distance < 3.0) {
+                    foundName = `[E] Взять: ${item.name}`;
+                    break;
+                }
+            }
+        }
+        if (foundName) {
+            hoverHintEl.textContent = foundName;
+            hoverHintEl.classList.remove('hidden');
+        } else {
+            hoverHintEl.classList.add('hidden');
+        }
+    }
+
+    // ============================================================================
+    // 13. ФИЗИКА ПРЕДМЕТОВ, АНИМАЦИЯ ПОРТАЛА И СМЕШИВАЛКИ
+    // ============================================================================
+    function updatePhysicsAndWorld(dt) {
+        // 1. Физика брошенных предметов и столкновение со столами / полом
+        for (const item of grabbableItems) {
+            if (item.heldBy) continue;
+
+            // Гравитация
+            item.velocity.y -= 9.8 * dt;
+            item.mesh.position.addScaledVector(item.velocity, dt);
+
+            // Определяем высоту поверхности под предметом (столы или пол)
+            let floorHeight = 0.08;
+            const p = item.mesh.position;
+
+            // Верстак (x: -1.8..1.8, z: -3.15..-2.05, y: 0.96)
+            if (p.x > -1.8 && p.x < 1.8 && p.z > -3.15 && p.z < -2.05 && p.y >= 0.85) {
+                floorHeight = 1.03;
+            }
+            // Правый стол (x: 2.3..3.3, z: -1.6..0.6, y: 0.90)
+            else if (p.x > 2.3 && p.x < 3.3 && p.z > -1.6 && p.z < 0.6 && p.y >= 0.8) {
+                floorHeight = 0.98;
+            }
+            // Смешивалка слева (x: -3.4..-2.4, z: -1.8..0.4, y: 0.95)
+            else if (p.x > -3.4 && p.x < -2.4 && p.z > -1.8 && p.z < 0.4 && p.y >= 0.85) {
+                floorHeight = 1.06;
+            }
+
+            if (p.y <= floorHeight) {
+                p.y = floorHeight;
+                item.velocity.y = 0;
+                item.velocity.x *= 0.78;
+                item.velocity.z *= 0.78;
+            }
+        }
+
+        // 2. Анимация портала и проверка входа игрока в портал!
+        if (activePortal) {
+            activePortal.disc.rotation.z += dt * 3.2;
+            if (activePortal.cooldown > 0) {
+                activePortal.cooldown -= dt;
+            } else {
+                const headPos = new THREE.Vector3();
+                camera.getWorldPosition(headPos);
+                const distToPortal = Math.hypot(
+                    headPos.x - activePortal.group.position.x,
+                    headPos.z - activePortal.group.position.z
+                );
+                if (distToPortal < 0.85) {
+                    const dest = activePortal.targetIndex;
+                    scene.remove(activePortal.group);
+                    activePortal = null;
+                    portalGlowLight.intensity = 0;
+                    switchDimension(dest);
+                }
+            }
+        }
+
+        // 3. Эффект плазмы на Смешивалке
+        if (combinerSparkTimer > 0 && combinerPlasmaArc) {
+            combinerSparkTimer -= dt;
+            combinerPlasmaArc.material.opacity = Math.random();
+            combinerPlasmaArc.scale.set(1 + Math.random() * 1.5, 1, 1 + Math.random() * 1.5);
+            if (combinerSparkTimer <= 0) {
+                combinerPlasmaArc.material.opacity = 0;
+            }
+        }
+
+        // 4. Анимация активных сущностей (Мистер Мисикс и лазерные заряды)
+        for (let i = activeEntities.length - 1; i >= 0; i--) {
+            const ent = activeEntities[i];
+            ent.life -= dt;
+            if (ent.type === 'meeseeks') {
+                const wave = Math.sin(performance.now() * 0.01) * 0.5;
+                ent.armL.rotation.z = 0.6 + wave;
+                ent.armR.rotation.z = -0.6 - wave;
+                ent.mesh.position.y = Math.abs(Math.sin(performance.now() * 0.008)) * 0.12;
+            } else if (ent.type === 'laser') {
+                ent.mesh.position.addScaledVector(ent.vel, dt);
+            }
+
+            if (ent.life <= 0) {
+                scene.remove(ent.mesh);
+                activeEntities.splice(i, 1);
+            }
+        }
+    }
+
+    // ============================================================================
+    // 14. КНОПКА ВХОДА В WEBXR (QUEST 2 / QUEST 3) И ЗАПУСК ЦИКЛА
+    // ============================================================================
+    const enterVrBtn = document.getElementById('enter-vr-btn');
+    const vrStatusEl = document.getElementById('vr-status');
+    const uiOverlay = document.getElementById('ui-overlay');
+
+    async function setupWebXR() {
+        if ('xr' in navigator) {
+            const supported = await navigator.xr.isSessionSupported('immersive-vr');
+            if (supported) {
+                vrStatusEl.textContent = '✅ Meta Quest / WebXR готов к запуску!';
+                vrStatusEl.classList.replace('text-cyan-300', 'text-lime-400');
+            } else {
+                vrStatusEl.textContent = 'ℹ️ VR-шлем не обнаружен (доступен ПК-режим)';
+            }
+        } else {
+            vrStatusEl.textContent = 'ℹ️ WebXR не поддерживается этим браузером';
+        }
+    }
+
+    enterVrBtn.addEventListener('click', async () => {
+        sfx.init();
+        if (!('xr' in navigator)) return;
+        try {
+            const session = await navigator.xr.requestSession('immersive-vr', {
+                optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
+            });
+            renderer.xr.setSession(session);
+        } catch (err) {
+            vrStatusEl.textContent = '⚠️ Не удалось запустить VR-сессию: ' + err.message;
+        }
+    });
+
+    renderer.xr.addEventListener('sessionstart', () => {
+        uiOverlay.style.display = 'none';
+    });
+    renderer.xr.addEventListener('sessionend', () => {
+        uiOverlay.style.display = 'flex';
+    });
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Инициализация сцены
+    buildGarage();
+    spawnInitialItems();
+    setupWebXR();
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+        const dt = Math.min(clock.getDelta(), 0.05);
+        updateVRControllers(dt);
+        updateDesktopMovement(dt);
+        updatePhysicsAndWorld(dt);
+        renderer.render(scene, camera);
+    });
+    </script>
+</body>
+</html>
